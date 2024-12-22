@@ -1,0 +1,22 @@
+# Node.js y Angular
+node_modules/
+dist/
+.env
+
+# Sistemas Operativos
+.DS_Store
+Thumbs.db
+
+# IDEs y editores
+.idea/
+.vscode/
+*.suo
+*.log
+
+# Archivos temporales
+*.tmp
+*.bak
+*.swp
+
+# Otros
+package-lock.json
