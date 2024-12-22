@@ -1,6 +1,8 @@
 <?php
 include_once __DIR__ . '/../models/Usuario.php';
 include_once __DIR__ . '/../../vendor/autoload.php';
+include_once __DIR__ . '/AuditoriaController.php';
+
 
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
@@ -15,11 +17,11 @@ class UsuarioController
 
             if ($result['success']) {
                 $token = $this->generateJWT($result['id_usuario']);
-                echo json_encode([
-                    "success" => true,
-                    "message" => "Login exitoso",
-                    "token" => $token
-                ]);
+
+                $auditoria = new Auditoria();
+                $auditoria->registrar($result['id_usuario'], 'Login', 'El usuario inicio sesion exitosamente.');
+
+                echo json_encode(["success" => true, "message" => "Login exitoso", "token" => $token]);
             } else {
                 echo json_encode(["success" => false, "message" => $result['message']]);
             }
