@@ -82,8 +82,8 @@ class UsuarioController
             // Decodificar el token con la clave secreta
             $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
-            // Convertir el objeto a un arreglo asociativo
-            return (array)$decoded;
+            // Convertir el objeto decodificado a un arreglo asociativo
+            return json_decode(json_encode($decoded), true); // Asegúrate de que esto esté aquí
         } catch (Exception $e) {
             throw new Exception("Token inválido: " . $e->getMessage());
         }

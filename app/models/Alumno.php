@@ -1,6 +1,9 @@
 <?php
 include_once __DIR__ . '/../../config/db.php';
 
+use Carbon\Carbon;
+use Cmixin\BusinessDay;
+
 class Alumno
 {
     private $conn;
@@ -9,6 +12,22 @@ class Alumno
     {
         $database = new Database();
         $this->conn = $database->getConnection();
+
+        Carbon::mixin(new BusinessDay());
+        Carbon::setHolidaysRegion('mx');
+
+        Carbon::addHolidays('mx', [
+            '2024-04-01',
+            '2024-04-15',
+            '2024-07-15',
+            '2024-08-01',
+            '2024-12-24',
+            '2024-12-31',
+        ]);
+
+        Carbon::setBusinessDayChecker(function (Carbon $date) {
+            return !$date->isHoliday(); // Considerar hábil si no es festivo
+        });
     }
 
     public function verificarCURP($curp)
@@ -40,15 +59,34 @@ class Alumno
 
     public function insertarAlumnoGradoMayores($data)
     {
-        $query = "INSERT INTO escuelaAlumnoGradoMayores (id_escuelaAlumnoMayores, id_escuelaPlantel, nivel, grado, intento, id_escuelaAlumnoStatus, fechaReg, id_acceso) 
-                  VALUES (:id_escuelaAlumnoMayores, :id_escuelaPlantel, :nivel, :grado, 1, :id_escuelaAlumnoStatus, NOW(), :id_acceso)";
+        $idCicloEscolar = $this->obtenerCicloEscolarActivo();
+        if (!$idCicloEscolar) {
+            throw new Exception("No se encontró un ciclo escolar activo.");
+        }
+
+        $fechaExamen = $this->calcularFechaExamen($data['fechaReg']);
+        $anioExamen = Carbon::parse($fechaExamen)->year;
+        $anioRegistro = Carbon::parse($data['fechaReg'])->year;
+
+        if ($anioExamen > $anioRegistro) {
+            $idCicloEscolar = $this->obtenerCicloEscolarPorAnio($anioExamen);
+            if (!$idCicloEscolar) {
+                throw new Exception("No se encontró un ciclo escolar para el año $anioExamen.");
+            }
+        }
+
+
+        $query = "INSERT INTO escuelaAlumnoGradoMayores (id_escuelaAlumnoMayores, id_escuelaPlantel, nivel, grado, id_escuelaCicloEscolarMayores, intento, id_escuelaAlumnoStatus, fechaReg, fechaExa, id_acceso) 
+                  VALUES (:id_escuelaAlumnoMayores, :id_escuelaPlantel, :nivel, :grado, :id_escuelaCicloEscolarMayores, 1, :id_escuelaAlumnoStatus, NOW(), :fechaExamen, :id_acceso)";
         $stmt = $this->conn->prepare($query);
 
         $stmt->bindParam(":id_escuelaAlumnoMayores", $data['id_escuelaAlumnoMayores']);
         $stmt->bindParam(":id_escuelaPlantel", $data['id_escuelaPlantel']);
         $stmt->bindParam(":nivel", $data['nivel']);
         $stmt->bindParam(":grado", $data['grado']);
+        $stmt->bindParam(":id_escuelaCicloEscolarMayores", $idCicloEscolar);
         $stmt->bindParam(":id_escuelaAlumnoStatus", $data['id_escuelaAlumnoStatus']);
+        $stmt->bindParam(":fechaExamen", $fechaExamen);
         $stmt->bindParam(":id_acceso", $data['id_acceso']);
 
         return $stmt->execute();
@@ -56,22 +94,24 @@ class Alumno
 
     public function puedeCapturarCalificaciones($id_escuelaAlumnoGradoMayores)
     {
-        $query = "SELECT fechaReg FROM escuelaAlumnoGradoMayores WHERE id_escuelaAlumnoGradoMayores = :id";
+        $query = "SELECT fechaReg, id_escuelaAlumnoGradoMayores FROM escuelaAlumnoGradoMayores WHERE id_escuelaAlumnoGradoMayores = :id";
         $stmt = $this->conn->prepare($query);
         $stmt->bindParam(':id', $id_escuelaAlumnoGradoMayores);
         $stmt->execute();
 
         $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($resultado) {
-            $fechaReg = $resultado['fechaReg']; // Fecha de registro
-            $fechaLimite = date('Y-m-d', strtotime($fechaReg . ' +3 months')); // Fecha límite para capturar
-            $hoy = date('Y-m-d'); // Fecha actual
-
-            return $hoy >= $fechaLimite; // Retorna true si ya pasaron 3 meses
-        } else {
-            throw new Exception("No se encontró el registro del alumno.");
+        if (!$resultado) {
+            throw new Exception("Registro no encontrado.");
         }
+        $fechaRegistro = Carbon::parse($resultado['fechaReg']);
+        if (!$fechaRegistro->isValid()) {
+            throw new Exception("Fecha de registro no válida.");
+        }
+
+        $diasHabiles = $fechaRegistro->diffInBusinessDays(Carbon::now());
+
+        return $diasHabiles >= 90;
     }
 
     public function obtenerUltimoIntento($id_escuelaAlumnoGradoMayores)
@@ -119,42 +159,69 @@ class Alumno
         }
     }
 
-    public function registrarAlumno($data)
+    public function registrarAlumnoConAuditoria($data)
     {
         try {
-            $this->conn->beginTransaction();
 
+            if (!$this->conn->inTransaction()) {
+                $this->conn->beginTransaction();
+            }
+            // Verificar si la CURP ya existe antes de iniciar la transacción
             $alumnoExistente = $this->verificarCURP($data['mayores']['curp']);
 
             if ($alumnoExistente) {
-                $estatusQuery = "SELECT id_escuelaAlumnoStatus FROM escuelaAlumnoGradoMayores 
+                $estatusQuery = "SELECT id_escuelaAlumnoStatus, id_escuelaCicloEscolarMayores FROM escuelaAlumnoGradoMayores 
                 WHERE id_escuelaAlumnoMayores = :id_escuelaAlumnoMayores 
                 ORDER BY fechaReg DESC LIMIT 1";
                 $stmt = $this->conn->prepare($estatusQuery);
                 $stmt->bindParam(":id_escuelaAlumnoMayores", $alumnoExistente['id_escuelaAlumnoMayores']);
                 $stmt->execute();
-                $estatus = $stmt->fetch(PDO::FETCH_ASSOC)['id_escuelaAlumnoStatus'];
+                $estatus = $stmt->fetch(PDO::FETCH_ASSOC);
 
-                if ($estatus == 5) {
-                    $data['grado']['id_escuelaAlumnoMayores'] = $alumnoExistente['id_escuelaAlumnoMayores'];
-                    $resultadoGrado = $this->insertarAlumnoGradoMayores($data['grado']);
-                    if (!$resultadoGrado) {
-                        throw new Exception("Error al registrar en escuelaAlumnoGradoMayores");
+                // Validar estatus y ciclo escolar
+                if ($estatus['id_escuelaAlumnoStatus'] != 5) {
+                    $idCicloEscolarActual = $this->obtenerCicloEscolarActivo();
+                    if ($estatus['id_escuelaCicloEscolarMayores'] >= $idCicloEscolarActual) {
+                        throw new Exception("El alumno ya está registrado en una escuela activa y en un ciclo escolar igual o superior.");
                     }
-                } else {
-                    throw new Exception("El alumno ya está registrado en una escuela activa.");
+                }
+            }
+
+            // Iniciar la transacción después de la validación
+            //$this->conn->beginTransaction();
+
+            // Registrar la auditoría
+            $queryAuditoria = "INSERT INTO auditoria (id_usuario, accion, detalle, fecha) 
+                           VALUES (:id_usuario, :accion, :detalle, NOW())";
+            $stmtAuditoria = $this->conn->prepare($queryAuditoria);
+            $stmtAuditoria->bindParam(":id_usuario", $data['id_usuario']);
+            $stmtAuditoria->bindParam(":accion", $data['accion']);
+            $stmtAuditoria->bindParam(":detalle", $data['detalle']);
+
+            if (!$stmtAuditoria->execute()) {
+                throw new Exception("Error al registrar auditoría.");
+            }
+
+            // Obtener el id_acceso generado para esta auditoría
+            $id_acceso = $this->conn->lastInsertId();
+
+            // Continuar con el registro del alumno
+            if (!$alumnoExistente) {
+                // Insertar en escuelaAlumnoMayores si no existe
+                $id_escuelaAlumnoMayores = $this->insertarAlumnoMayores(array_merge($data['mayores'], ['id_acceso' => $id_acceso]));
+                if (!$id_escuelaAlumnoMayores) {
+                    throw new Exception("Error al registrar en escuelaAlumnoMayores.");
                 }
             } else {
-                $id_escuelaAlumnoMayores = $this->insertarAlumnoMayores($data['mayores']);
-                if (!$id_escuelaAlumnoMayores) {
-                    throw new Exception("Error al registrar en escuelaAlumnoMayores");
-                }
+                $id_escuelaAlumnoMayores = $alumnoExistente['id_escuelaAlumnoMayores'];
+            }
 
-                $data['grado']['id_escuelaAlumnoMayores'] = $id_escuelaAlumnoMayores;
-                $resultadoGrado = $this->insertarAlumnoGradoMayores($data['grado']);
-                if (!$resultadoGrado) {
-                    throw new Exception("Error al registrar en escuelaAlumnoGradoMayores");
-                }
+            $data['grado']['id_escuelaAlumnoMayores'] = $id_escuelaAlumnoMayores;
+            $data['grado']['id_acceso'] = $id_acceso; // Asignar el id_acceso generado
+
+            $resultadoGrado = $this->insertarAlumnoGradoMayores($data['grado']);
+            if (!$resultadoGrado) {
+                throw new Exception("Error al registrar en escuelaAlumnoGradoMayores.");
             }
 
             $this->conn->commit();
@@ -163,5 +230,129 @@ class Alumno
             $this->conn->rollback();
             return $e->getMessage();
         }
+    }
+
+    public function verificarAprobacion($calificaciones)
+    {
+        // Calcula el promedio de las calificaciones
+        $promedio = array_sum($calificaciones) / count($calificaciones);
+
+        // Criterio de aprobación
+        $promedioMinimo = 6; // Cambia esto según tus reglas
+        return $promedio >= $promedioMinimo;
+    }
+
+    public function registrarSiguienteGrado($idEscuelaAlumnoGrado, $nivelActual, $gradoActual, $idAcceso)
+    {
+        $queryValidacion = "SELECT id_escuelaAlumnoGradoMayores 
+        FROM escuelaAlumnoGradoMayores 
+        WHERE id_escuelaAlumnoGradoMayores = :id";
+        $stmtValidacion = $this->conn->prepare($queryValidacion);
+        $stmtValidacion->bindParam(':id', $idEscuelaAlumnoGrado);
+        $stmtValidacion->execute();
+
+        if ($stmtValidacion->rowCount() === 0) {
+            throw new Exception("El registro con ID proporcionado no existe.");
+        }
+
+        // Validar nivel y grado actuales
+        if (empty($nivelActual) || empty($gradoActual)) {
+            throw new Exception("Nivel o grado actual no proporcionado.");
+        }
+
+        $idCicloEscolar = $this->obtenerCicloEscolarActivo();
+        if (!$idCicloEscolar) {
+            throw new Exception("No se encontró un ciclo escolar activo.");
+        }
+
+        // Inicializar nuevo nivel, grado y estatus
+        $nuevoNivel = $nivelActual;
+        $nuevoGrado = $gradoActual;
+        $nuevoEstatus = 1; // Por defecto: Acreditado
+
+        // Determinar el siguiente grado y nivel basado en las reglas
+        if ($nivelActual === 1 && $gradoActual < 2) {
+            $nuevoGrado = $gradoActual + 1; // Primaria: Incrementar grado
+        } elseif ($nivelActual === 1 && $gradoActual === 2) {
+            $nuevoNivel = 2;
+            $nuevoGrado = 3; // Fin de Primaria: Pasar a Secundaria
+        } elseif ($nivelActual === 2 && $gradoActual < 5) {
+            $nuevoGrado = $gradoActual + 1; // Secundaria: Incrementar grado
+        } elseif ($nivelActual === 2 && $gradoActual === 5) {
+            $nuevoEstatus = 3; // Fin de Secundaria: Certificado
+        }
+
+        $fechaExamen = Carbon::now()->addBusinessDay(90)->toDateString();
+
+        // Validar datos antes de ejecutar la consulta
+        if (empty($nuevoNivel) || empty($nuevoGrado) || empty($nuevoEstatus)) {
+            throw new Exception("Datos insuficientes para registrar el siguiente grado.");
+        }
+
+        // Insertar el nuevo registro
+        $query = "INSERT INTO escuelaAlumnoGradoMayores (id_escuelaAlumnoMayores, nivel, grado, id_escuelaCicloEscolarMayores, id_acceso, id_escuelaStatusAlumnoGrado, fechaReg, fechaExa)
+              SELECT id_escuelaAlumnoMayores, :nivel, :grado, :idCicloEscolar, :idAcceso, :estatus NOW(), :fechaExamen
+              FROM escuelaAlumnoGradoMayores
+              WHERE id = :idEscuelaAlumnoGrado";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(':nivel', $nuevoNivel);
+        $stmt->bindParam(':grado', $nuevoGrado);
+        $stmt->bindParam(':idCicloEscolar', $idCicloEscolar);
+        $stmt->bindParam(':idAcceso', $idAcceso);
+        $stmt->bindParam(':estatus', $nuevoEstatus);
+        $stmt->bindParam(':fechaExamen', $fechaExamen);
+        $stmt->bindParam(':idEscuelaAlumnoGrado', $idEscuelaAlumnoGrado);
+
+
+        // Ejecutar y validar la inserción
+        if ($stmt->execute()) {
+            return true;
+        } else {
+            error_log("Error al registrar el siguiente grado: " . json_encode($stmt->errorInfo()));
+            return false;
+        }
+    }
+
+    public function obtenerCicloEscolarActivo()
+    {
+        $query = "SELECT id_escuelaCicloEscolarMayores FROM escuelaCicloEscolarMayores WHERE activo = 1 LIMIT 1";
+        $stmt = $this->conn->prepare($query);
+        $stmt->execute();
+        $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $resultado['id_escuelaCicloEscolarMayores'] ?? null;
+    }
+
+    public function calcularFechaExamen($fechaRegistro)
+    {
+        $fechaRegistro = Carbon::parse($fechaRegistro);
+        if (!$fechaRegistro->isValid()) {
+            throw new Exception("Fecha de registro no válida.");
+        }
+
+        // Sumar los días hábiles
+        $fechaExamen = $fechaRegistro->addBusinessDays(90);
+
+        // Si cambia de año, verifica que el nuevo ciclo escolar esté correcto
+        $anioRegistro = $fechaRegistro->year;
+        $anioExamen = $fechaExamen->year;
+
+        if ($anioExamen > $anioRegistro) {
+            $nuevoCicloEscolar = $this->obtenerCicloEscolarPorAnio($anioExamen);
+            if (!$nuevoCicloEscolar) {
+                throw new Exception("No se encontró un ciclo escolar para el año $anioExamen.");
+            }
+        }
+
+        return $fechaExamen->toDateString();
+    }
+    public function obtenerCicloEscolarPorAnio($anio)
+    {
+        $query = "SELECT id_escuelaCicloEscolarMayores FROM escuelaCicloEscolarMayores WHERE anio = :anio LIMIT 1";
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(':anio', $anio);
+        $stmt->execute();
+        $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $resultado['id_escuelaCicloEscolarMayores'] ?? null;
     }
 }

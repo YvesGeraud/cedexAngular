@@ -12,13 +12,13 @@ $dotenv->load();
 function validateJWT($token)
 {
     try {
-        // Validar que JWT_SECRET esté definida
-        if (!isset($_ENV['JWT_SECRET']) || empty($_ENV['JWT_SECRET'])) {
-            throw new Exception("La variable JWT_SECRET no está definida en el archivo .env.");
+        $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
+
+        // Verifica que el campo `data` y `id_usuario` existan en el payload
+        if (!isset($decoded->data->id_usuario)) {
+            throw new Exception("El token no contiene el campo 'id_usuario'. Payload: " . json_encode($decoded));
         }
 
-        // Decodificar el token
-        $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
         return $decoded->data->id_usuario; // Devuelve el id del usuario si es válido
     } catch (Exception $e) {
         http_response_code(401);

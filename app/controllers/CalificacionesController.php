@@ -101,6 +101,32 @@ class CalificacionesController
             $resultado = $this->alumnoModel->registrarCalificaciones($datosCalificaciones);
 
             if ($resultado) {
+
+                $calificaciones = [
+                    $data->calificaciones->español,
+                    $data->calificaciones->matematicas,
+                    $data->calificaciones->cienciasNaturales,
+                    $data->calificaciones->cienciasSociales
+                ];
+            }
+
+            $aprobo = $this->alumnoModel->verificarAprobacion($calificaciones);
+
+            if ($aprobo) {
+                // Registrar el siguiente grado o nivel
+                $promovido = $this->alumnoModel->registrarSiguienteGrado(
+                    $data->id_escuelaAlumnoGradoMayores,
+                    $data->nivel, // Nivel actual
+                    $data->grado, // Grado actual
+                    $id_acceso
+                );
+
+                if ($promovido) {
+                    error_log("Alumno promovido al siguiente grado/nivel.");
+                }
+            }
+
+            if ($resultado) {
                 echo json_encode(["success" => true, "message" => "Calificaciones registradas exitosamente."]);
                 http_response_code(201);
             } else {
