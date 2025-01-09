@@ -185,17 +185,14 @@ class Alumno
                         throw new Exception("El alumno ya está registrado en una escuela activa y en un ciclo escolar igual o superior.");
                     }
                 }
+            } else {
+                // Registrar la auditoría
+                $id_acceso = $this->registrarAuditoria(
+                    $data['id_usuario'],
+                    'Registro de alumno',
+                    'Registro de alumno con CURP: ' . $data['mayores']['curp']
+                );
             }
-
-            // Iniciar la transacción después de la validación
-            //$this->conn->beginTransaction();
-
-            // Registrar la auditoría
-            $id_acceso = $this->registrarAuditoria(
-                $data['id_usuario'],
-                'Registro de alumno',
-                'Registro de alumno con CURP: ' . $data['mayores']['curp']
-            );
 
             // Continuar con el registro del alumno
             if (!$alumnoExistente) {
@@ -208,14 +205,15 @@ class Alumno
                 $id_escuelaAlumnoMayores = $alumnoExistente['id_escuelaAlumnoMayores'];
             }
 
-            $data['grado']['id_escuelaAlumnoMayores'] = $id_escuelaAlumnoMayores;
-            $data['grado']['id_acceso'] = $id_acceso; // Asignar el id_acceso generado
-
             $id_acceso = $this->registrarAuditoria(
                 $data['id_usuario'],
                 'Registro de alumno Grado',
-                'Registro de alumnoGrado con CURP: ' . $data['mayores']['curp']
+                'Registro de alumnoGrado con CURP: ' . $data['mayores']['curp'] . ', Nivel: ' . $data['grado']['nivel'] . ', Grado: ' . $data['grado']['grado']
             );
+
+            $data['grado']['id_escuelaAlumnoMayores'] = $id_escuelaAlumnoMayores;
+            $data['grado']['id_acceso'] = $id_acceso; // Asignar el id_acceso generado
+
 
             $resultadoGrado = $this->insertarAlumnoGradoMayores($data['grado']);
             if (!$resultadoGrado) {
