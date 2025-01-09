@@ -170,9 +170,9 @@ class Alumno
             $alumnoExistente = $this->verificarCURP($data['mayores']['curp']);
 
             if ($alumnoExistente) {
-                $estatusQuery = "SELECT id_escuelaAlumnoStatus, id_escuelaCicloEscolarMayores FROM escuelaAlumnoGradoMayores 
+                $estatusQuery = "SELECT id_escuelaAlumnoGradoMayores, id_escuelaAlumnoStatus, id_escuelaCicloEscolarMayores FROM escuelaAlumnoGradoMayores 
                 WHERE id_escuelaAlumnoMayores = :id_escuelaAlumnoMayores 
-                ORDER BY fechaReg DESC LIMIT 1";
+                ORDER BY id_escuelaAlumnoGradoMayores DESC LIMIT 1";
                 $stmt = $this->conn->prepare($estatusQuery);
                 $stmt->bindParam(":id_escuelaAlumnoMayores", $alumnoExistente['id_escuelaAlumnoMayores']);
                 $stmt->execute();
@@ -191,19 +191,11 @@ class Alumno
             //$this->conn->beginTransaction();
 
             // Registrar la auditoría
-            $queryAuditoria = "INSERT INTO auditoria (id_usuario, accion, detalle, fecha) 
-                           VALUES (:id_usuario, :accion, :detalle, NOW())";
-            $stmtAuditoria = $this->conn->prepare($queryAuditoria);
-            $stmtAuditoria->bindParam(":id_usuario", $data['id_usuario']);
-            $stmtAuditoria->bindParam(":accion", $data['accion']);
-            $stmtAuditoria->bindParam(":detalle", $data['detalle']);
-
-            if (!$stmtAuditoria->execute()) {
-                throw new Exception("Error al registrar auditoría.");
-            }
-
-            // Obtener el id_acceso generado para esta auditoría
-            $id_acceso = $this->conn->lastInsertId();
+            $id_acceso = $this->registrarAuditoria(
+                $data['id_usuario'],
+                'Registro de alumno',
+                'Registro de alumno con CURP: ' . $data['mayores']['curp']
+            );
 
             // Continuar con el registro del alumno
             if (!$alumnoExistente) {
@@ -218,6 +210,12 @@ class Alumno
 
             $data['grado']['id_escuelaAlumnoMayores'] = $id_escuelaAlumnoMayores;
             $data['grado']['id_acceso'] = $id_acceso; // Asignar el id_acceso generado
+
+            $id_acceso = $this->registrarAuditoria(
+                $data['id_usuario'],
+                'Registro de alumno Grado',
+                'Registro de alumnoGrado con CURP: ' . $data['mayores']['curp']
+            );
 
             $resultadoGrado = $this->insertarAlumnoGradoMayores($data['grado']);
             if (!$resultadoGrado) {
@@ -354,5 +352,20 @@ class Alumno
         $stmt->execute();
         $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
         return $resultado['id_escuelaCicloEscolarMayores'] ?? null;
+    }
+
+    public function registrarAuditoria($id_usuario, $accion, $detalle)
+    {
+        $query = "INSERT INTO auditoria (id_usuario, accion, detalle, fecha) VALUES (:id_usuario, :accion, :detalle, NOW())";
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":id_usuario", $id_usuario);
+        $stmt->bindParam(":accion", $accion);
+        $stmt->bindParam(":detalle", $detalle);
+
+        if (!$stmt->execute()) {
+            throw new Exception("Error al registrar auditoría.");
+        }
+
+        return $this->conn->lastInsertId();
     }
 }
