@@ -130,15 +130,12 @@ class Alumno
     public function registrarCalificaciones($data)
     {
         try {
-
-            // Obtener el último intento registrado
             $ultimoIntento = $this->obtenerUltimoIntento($data['id_escuelaAlumnoGradoMayores']);
             $nuevoIntento = $ultimoIntento + 1;
 
-            // Insertar la nueva calificación con el nuevo intento
             $query = "INSERT INTO escuelaCalificacionesMayores 
-                      (id_escuelaAlumnoGradoMayores, intento, espanol, matematicas, cienciasNaturales, cienciasSociales, fechaReg, id_acceso) 
-                      VALUES (:id_escuelaAlumnoGradoMayores, :intento, :espanol, :matematicas, :cienciasNaturales, :cienciasSociales, NOW(), :id_acceso)";
+                  (id_escuelaAlumnoGradoMayores, intento, espanol, matematicas, cienciasNaturales, cienciasSociales, fechaReg, id_acceso) 
+                  VALUES (:id_escuelaAlumnoGradoMayores, :intento, :espanol, :matematicas, :cienciasNaturales, :cienciasSociales, NOW(), :id_acceso)";
             $stmt = $this->conn->prepare($query);
 
             $stmt->bindParam(':id_escuelaAlumnoGradoMayores', $data['id_escuelaAlumnoGradoMayores']);
@@ -150,12 +147,14 @@ class Alumno
             $stmt->bindParam(':id_acceso', $data['id_acceso']);
 
             if (!$stmt->execute()) {
-                throw new Exception(implode(" | ", $stmt->errorInfo()));
+                throw new Exception("Error al registrar las calificaciones: " . implode(" | ", $stmt->errorInfo()));
             }
 
+            // Devolver true explícitamente si la inserción fue exitosa
             return true;
         } catch (Exception $e) {
-            return $e->getMessage();
+            error_log("Error en registrarCalificaciones: " . $e->getMessage());
+            throw $e; // Asegúrate de que el controlador pueda manejar este error
         }
     }
 
@@ -238,20 +237,19 @@ class Alumno
         return $promedio >= $promedioMinimo;
     }
 
-    public function registrarSiguienteGrado($idEscuelaAlumnoGrado, $nivelActual, $gradoActual, $idAcceso)
+    public function registrarSiguienteGrado($idEscuelaAlumnoGrado, $idAcceso)
     {
-        $queryValidacion = "SELECT id_escuelaAlumnoGradoMayores 
-        FROM escuelaAlumnoGradoMayores 
-        WHERE id_escuelaAlumnoGradoMayores = :id";
-        $stmtValidacion = $this->conn->prepare($queryValidacion);
-        $stmtValidacion->bindParam(':id', $idEscuelaAlumnoGrado);
-        $stmtValidacion->execute();
+        // Obtener datos del alumno y grado actual
+        $alumnoGrado = $this->obtenerAlumnoGrado($idEscuelaAlumnoGrado);
 
-        if ($stmtValidacion->rowCount() === 0) {
-            throw new Exception("El registro con ID proporcionado no existe.");
+        if (!$alumnoGrado) {
+            throw new Exception("No se encontró información para el ID proporcionado.");
         }
 
         // Validar nivel y grado actuales
+        $nivelActual = $alumnoGrado['nivel'];
+        $gradoActual = $alumnoGrado['grado'];
+
         if (empty($nivelActual) || empty($gradoActual)) {
             throw new Exception("Nivel o grado actual no proporcionado.");
         }
@@ -261,54 +259,58 @@ class Alumno
             throw new Exception("No se encontró un ciclo escolar activo.");
         }
 
-        // Inicializar nuevo nivel, grado y estatus
+        // Determinar el siguiente grado y nivel
         $nuevoNivel = $nivelActual;
         $nuevoGrado = $gradoActual;
         $nuevoEstatus = 1; // Por defecto: Acreditado
+        $intento = 1;
 
-        // Determinar el siguiente grado y nivel basado en las reglas
         if ($nivelActual === 1 && $gradoActual < 2) {
             $nuevoGrado = $gradoActual + 1; // Primaria: Incrementar grado
         } elseif ($nivelActual === 1 && $gradoActual === 2) {
-            $nuevoNivel = 2;
-            $nuevoGrado = 3; // Fin de Primaria: Pasar a Secundaria
+            $nuevoNivel = 2; // Pasar a secundaria
+            $nuevoGrado = 3;
         } elseif ($nivelActual === 2 && $gradoActual < 5) {
             $nuevoGrado = $gradoActual + 1; // Secundaria: Incrementar grado
         } elseif ($nivelActual === 2 && $gradoActual === 5) {
-            $nuevoEstatus = 3; // Fin de Secundaria: Certificado
+            $nuevoEstatus = 3; // Fin de secundaria: Certificado
         }
 
         $fechaExamen = Carbon::now()->addBusinessDay(90)->toDateString();
 
-        // Validar datos antes de ejecutar la consulta
-        if (empty($nuevoNivel) || empty($nuevoGrado) || empty($nuevoEstatus)) {
-            throw new Exception("Datos insuficientes para registrar el siguiente grado.");
+        // Validar los datos y asignar valores seguros
+        $idEscuelaPlantel = $alumnoGrado['id_escuelaPlantel'] ?? null;
+        if ($idEscuelaPlantel === null) {
+            throw new Exception("No se encontró el campo 'id_escuelaPlantel'.");
         }
 
-        // Insertar el nuevo registro
-        $query = "INSERT INTO escuelaAlumnoGradoMayores (id_escuelaAlumnoMayores, nivel, grado, id_escuelaCicloEscolarMayores, id_acceso, id_escuelaStatusAlumnoGrado, fechaReg, fechaExa)
-              SELECT id_escuelaAlumnoMayores, :nivel, :grado, :idCicloEscolar, :idAcceso, :estatus NOW(), :fechaExamen
-              FROM escuelaAlumnoGradoMayores
-              WHERE id = :idEscuelaAlumnoGrado";
+        // Insertar el nuevo registro en escuelaAlumnoGradoMayores
+        $query = "INSERT INTO escuelaAlumnoGradoMayores 
+              (id_escuelaAlumnoMayores, id_escuelaPlantel, id_escuelaCicloEscolarMayores, nivel, grado, intento, id_escuelaAlumnoStatus, fechaReg, fechaExa, id_acceso) 
+              VALUES 
+              (:id_escuelaAlumnoMayores, :id_escuelaPlantel, :idCicloEscolar, :nivel, :grado, :intento, :estatus, NOW(), :fechaExamen, :idAcceso)";
 
         $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(':id_escuelaAlumnoMayores', $alumnoGrado['id_escuelaAlumnoMayores']);
+        $stmt->bindParam(':id_escuelaPlantel', $idEscuelaPlantel);
+        $stmt->bindParam(':idCicloEscolar', $idCicloEscolar);
         $stmt->bindParam(':nivel', $nuevoNivel);
         $stmt->bindParam(':grado', $nuevoGrado);
-        $stmt->bindParam(':idCicloEscolar', $idCicloEscolar);
-        $stmt->bindParam(':idAcceso', $idAcceso);
+        $stmt->bindParam(':intento', $intento);
         $stmt->bindParam(':estatus', $nuevoEstatus);
         $stmt->bindParam(':fechaExamen', $fechaExamen);
-        $stmt->bindParam(':idEscuelaAlumnoGrado', $idEscuelaAlumnoGrado);
-
+        $stmt->bindParam(':idAcceso', $idAcceso);
 
         // Ejecutar y validar la inserción
-        if ($stmt->execute()) {
-            return true;
-        } else {
-            error_log("Error al registrar el siguiente grado: " . json_encode($stmt->errorInfo()));
-            return false;
+        if (!$stmt->execute()) {
+            error_log("Error en execute: " . json_encode($stmt->errorInfo()));
+            throw new Exception("Error al ejecutar la consulta.");
         }
+
+        return true;
     }
+
+
 
     public function obtenerCicloEscolarActivo()
     {
@@ -365,5 +367,46 @@ class Alumno
         }
 
         return $this->conn->lastInsertId();
+    }
+
+    public function obtenerAlumnoGrado($id_escuelaAlumnoGradoMayores)
+    {
+        $query = "SELECT 
+                id_escuelaAlumnoGradoMayores, id_escuelaPlantel, nivel, grado, id_escuelaAlumnoMayores, 
+                id_escuelaCicloEscolarMayores, id_escuelaAlumnoStatus, fechaReg
+            FROM escuelaAlumnoGradoMayores 
+            WHERE id_escuelaAlumnoGradoMayores = :id_escuelaAlumnoGradoMayores
+            LIMIT 1";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(':id_escuelaAlumnoGradoMayores', $id_escuelaAlumnoGradoMayores, PDO::PARAM_INT);
+
+        //$stmt->debugDumpParams();
+        $stmt->execute();
+
+        $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$resultado) {
+            throw new Exception("No se encontró información para el grado del alumno con ID: $id_escuelaAlumnoGradoMayores.");
+        }
+
+        return $resultado;
+    }
+
+    public function incrementarIntento($idGrado, $idAcceso)
+    {
+        $query = "UPDATE escuelaAlumnoGradoMayores 
+              SET intento = intento + 1, id_acceso = :idAcceso 
+              WHERE id_escuelaAlumnoGradoMayores = :idGrado";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(':idAcceso', $idAcceso);
+        $stmt->bindParam(':idGrado', $idGrado);
+
+        if (!$stmt->execute()) {
+            throw new Exception("Error al intentar incrementar el intento: " . json_encode($stmt->errorInfo()));
+        }
+
+        return true;
     }
 }

@@ -64,30 +64,41 @@ class CalificacionesController
     public function registrarCalificacion($data)
     {
         if (empty($data->id_escuelaAlumnoGradoMayores)) {
-            echo json_encode(["success" => false, "message" => "Falta el ID del alumno."]);
+            echo json_encode(["success" => false, "message" => "Falta el ID del grado del alumno."]);
             http_response_code(400);
             return;
         }
 
         if (empty($data->calificaciones) || !isset($data->calificaciones->espanol, $data->calificaciones->matematicas, $data->calificaciones->cienciasNaturales, $data->calificaciones->cienciasSociales)) {
-            echo json_encode(["success" => false, "message" => "Faltan datos de calificaciones."]);
+            echo json_encode(["success" => false, "message" => "Faltan los datos de calificaciones."]);
             http_response_code(400);
             return;
         }
 
         try {
-            // Validar si puede capturar calificaciones
-            $data->calificaciones = $this->ajustarCalificaciones($data->calificaciones);
-            $id_acceso = $this->obtenerIdAcceso();
-            $puedeCapturar = $this->alumnoModel->puedeCapturarCalificaciones($data->id_escuelaAlumnoGradoMayores);
+            // Validar que el alumno y su grado existan
+            $alumnoGrado = $this->alumnoModel->obtenerAlumnoGrado($data->id_escuelaAlumnoGradoMayores);
+            if (!$alumnoGrado) {
+                echo json_encode(["success" => false, "message" => "El alumno no está registrado en el grado indicado."]);
+                http_response_code(404);
+                return;
+            }
 
+            // Ajustar las calificaciones dentro del rango permitido
+            $data->calificaciones = $this->ajustarCalificaciones($data->calificaciones);
+
+            // Validar el token del usuario y obtener el último acceso
+            $id_acceso = $this->obtenerIdAcceso();
+
+            // Validar si el alumno puede capturar calificaciones
+            $puedeCapturar = $this->alumnoModel->puedeCapturarCalificaciones($data->id_escuelaAlumnoGradoMayores);
             if (!$puedeCapturar) {
                 echo json_encode(["success" => false, "message" => "No puedes capturar calificaciones hasta 3 meses después del registro."]);
                 http_response_code(403);
                 return;
             }
 
-            // Preparar los datos para registrar calificaciones
+            // Preparar los datos para registrar las calificaciones
             $datosCalificaciones = [
                 'id_escuelaAlumnoGradoMayores' => $data->id_escuelaAlumnoGradoMayores,
                 'espanol' => $data->calificaciones->espanol,
@@ -100,41 +111,73 @@ class CalificacionesController
             // Registrar las calificaciones
             $resultado = $this->alumnoModel->registrarCalificaciones($datosCalificaciones);
 
-            if ($resultado) {
-
-                $calificaciones = [
-                    $data->calificaciones->español,
-                    $data->calificaciones->matematicas,
-                    $data->calificaciones->cienciasNaturales,
-                    $data->calificaciones->cienciasSociales
-                ];
+            if (!$resultado) {
+                throw new Exception("Ocurrió un error al registrar las calificaciones.");
             }
 
+            // Verificar si el alumno aprobó
+            $calificaciones = [
+                $data->calificaciones->espanol,
+                $data->calificaciones->matematicas,
+                $data->calificaciones->cienciasNaturales,
+                $data->calificaciones->cienciasSociales
+            ];
             $aprobo = $this->alumnoModel->verificarAprobacion($calificaciones);
 
             if ($aprobo) {
-                // Registrar el siguiente grado o nivel
-                $promovido = $this->alumnoModel->registrarSiguienteGrado(
-                    $data->id_escuelaAlumnoGradoMayores,
-                    $data->nivel, // Nivel actual
-                    $data->grado, // Grado actual
-                    $id_acceso
-                );
+                // Usar la función promoverAlumno para registrar el siguiente grado
+                $this->promoverAlumno($data->id_escuelaAlumnoGradoMayores, $alumnoGrado, $id_acceso);
 
-                if ($promovido) {
-                    error_log("Alumno promovido al siguiente grado/nivel.");
-                }
+                echo json_encode([
+                    "success" => true,
+                    "message" => "Calificaciones registradas exitosamente y el alumno fue promovido al siguiente grado."
+                ]);
+                http_response_code(201);
+                return;
+            } else {
+                $this->registrarIntentoAdicional($data->id_escuelaAlumnoGradoMayores, $id_acceso);
+                echo json_encode([
+                    "success" => true,
+                    "message" => "Añadido intento adicional."
+                ]);
+                http_response_code(201);
             }
 
-            if ($resultado) {
-                echo json_encode(["success" => true, "message" => "Calificaciones registradas exitosamente."]);
-                http_response_code(201);
+            // Respuesta de éxito solo con registro de calificaciones
+            echo json_encode([
+                "success" => true,
+                "message" => "Calificaciones registradas exitosamente."
+            ]);
+            http_response_code(201);
+        } catch (Exception $e) {
+            error_log("Error en registrarCalificacion: " . $e->getMessage());
+            echo json_encode(["success" => false, "message" => $e->getMessage()]);
+            http_response_code(500);
+        }
+    }
+
+    private function promoverAlumno($idGrado, $gradoActual, $idAcceso)
+    {
+        try {
+            $promovido = $this->alumnoModel->registrarSiguienteGrado(
+                $idGrado,
+                $gradoActual['id_escuelaPlantel'],
+                $gradoActual['nivel'],
+                $gradoActual['grado'],
+                $idAcceso
+            );
+
+            if ($promovido) {
+                error_log("El alumno fue promovido al siguiente grado/nivel.");
             } else {
-                echo json_encode(["success" => false, "message" => "Error al registrar las calificaciones."]);
-                http_response_code(500);
+                error_log("Error: No se pudo promover al alumno.");
             }
         } catch (Exception $e) {
-            echo json_encode(["success" => false, "message" => $e->getMessage()]);
+            error_log("Error en promoverAlumno: " . $e->getMessage());
+            echo json_encode([
+                "success" => false,
+                "message" => "Ocurrió un error al intentar promover al alumno: " . $e->getMessage()
+            ]);
             http_response_code(500);
         }
     }
@@ -152,5 +195,28 @@ class CalificacionesController
             }
         }
         return $calificaciones;
+    }
+
+    private function registrarIntentoAdicional($idGrado, $idAcceso)
+    {
+        try {
+            $incrementado = $this->alumnoModel->incrementarIntento(
+                $idGrado,
+                $idAcceso
+            );
+
+            if ($incrementado) {
+                error_log("Se registró un intento adicional para el alumno en el grado $idGrado.");
+            } else {
+                error_log("Error: No se pudo registrar un intento adicional para el alumno en el grado $idGrado.");
+            }
+        } catch (Exception $e) {
+            error_log("Error en registrarIntentoAdicional: " . $e->getMessage());
+            echo json_encode([
+                "success" => false,
+                "message" => "Ocurrió un error al intentar registrar un intento adicional: " . $e->getMessage()
+            ]);
+            http_response_code(500);
+        }
     }
 }
