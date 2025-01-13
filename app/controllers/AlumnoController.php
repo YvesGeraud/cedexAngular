@@ -109,6 +109,33 @@ class AlumnoController
         }
     }
 
+    public function obtenerAlumnos($data)
+    {
+        try {
+            // Validar y filtrar parámetros
+            $filtros = [];
+            if (!empty($data->id_ciclo_escolar)) {
+                $filtros['id_ciclo_escolar'] = $data->id_ciclo_escolar;
+            }
+            if (!empty($data->id_escuela)) {
+                $filtros['id_escuela'] = $data->id_escuela;
+            }
+            if (!empty($data->estatus)) {
+                $filtros['estatus'] = $data->estatus;
+            }
+
+            // Llamar al modelo para obtener alumnos
+            $alumnos = $this->alumnoModel->obtenerAlumnos($filtros);
+
+            // Respuesta JSON
+            echo json_encode(["success" => true, "data" => $alumnos]);
+            http_response_code(200);
+        } catch (Exception $e) {
+            echo json_encode(["success" => false, "message" => $e->getMessage()]);
+            http_response_code(500);
+        }
+    }
+
     public function darDeBajaAlumno($data)
     {
         /*header('Content-Type: application/json');

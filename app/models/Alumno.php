@@ -92,6 +92,52 @@ class Alumno
         return $stmt->execute();
     }
 
+    public function obtenerAlumnos($filtros = [])
+    {
+        $query = "SELECT 
+                a.id_escuelaAlumnoMayores, 
+                CONCAT(a.nombre, ' ', a.app, ' ', a.apm) AS nombre_completo, 
+                a.curp, 
+                g.nivel, 
+                g.grado, 
+                e.nombre AS escuela, 
+                c.fecha_inicio, 
+                c.fecha_fin, 
+                g.id_escuelaAlumnoStatus 
+              FROM escuelaAlumnoMayores a
+              JOIN escuelaAlumnoGradoMayores g ON a.id_escuelaAlumnoMayores = g.id_escuelaAlumnoMayores
+              JOIN escuelaPlantel e ON g.id_escuelaPlantel = e.id_escuelaPlantel
+              JOIN escuelaCicloEscolarMayores c ON g.id_escuelaCicloEscolarMayores = c.id_escuelaCicloEscolarMayores
+              WHERE 1";
+
+        if (!empty($filtros['id_ciclo_escolar'])) {
+            $query .= " AND g.id_escuelaCicloEscolarMayores = :id_ciclo_escolar";
+        }
+        if (!empty($filtros['id_escuela'])) {
+            $query .= " AND g.id_escuelaPlantel = :id_escuela";
+        }
+        if (!empty($filtros['estatus'])) {
+            $query .= " AND g.id_escuelaAlumnoStatus = :estatus";
+        }
+
+        $stmt = $this->conn->prepare($query);
+
+        // Vincular parámetros
+        if (!empty($filtros['id_ciclo_escolar'])) {
+            $stmt->bindParam(':id_ciclo_escolar', $filtros['id_ciclo_escolar'], PDO::PARAM_INT);
+        }
+        if (!empty($filtros['id_escuela'])) {
+            $stmt->bindParam(':id_escuela', $filtros['id_escuela'], PDO::PARAM_INT);
+        }
+        if (!empty($filtros['estatus'])) {
+            $stmt->bindParam(':estatus', $filtros['estatus'], PDO::PARAM_INT);
+        }
+
+        // Ejecutar y devolver los resultados
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
     public function puedeCapturarCalificaciones($id_escuelaAlumnoGradoMayores)
     {
         $query = "SELECT fechaReg, id_escuelaAlumnoGradoMayores FROM escuelaAlumnoGradoMayores WHERE id_escuelaAlumnoGradoMayores = :id";
