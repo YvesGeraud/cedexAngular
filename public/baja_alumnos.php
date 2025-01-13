@@ -1,4 +1,4 @@
-<?
+<?php
 require_once __DIR__ . '/../config/auth.php';
 require_once __DIR__ . '/../app/controllers/AlumnoController.php';
 
@@ -7,6 +7,7 @@ header("Access-Control-Allow-Methods: POST");
 header("Access-Control-Allow-Origin: *");
 
 try {
+    // Validar el token
     $headers = apache_request_headers();
     if (!isset($headers['Authorization'])) {
         throw new Exception("Token no proporcionado.");
@@ -14,10 +15,11 @@ try {
 
     $token = str_replace('Bearer ', '', $headers['Authorization']);
     $id_usuario = validateJWT($token); // Valida y obtiene el ID del usuario
-    $data = json_decode(file_get_contents("php://input"));
 
+    // Lógica para dar de baja a un alumno
+    $data = json_decode(file_get_contents("php://input"));
     $controller = new AlumnoController();
-    $controller->bajaAlumno($data);
+    $controller->darDeBajaAlumno($data);
 
     echo json_encode(["success" => true, "message" => "Alumno dado de baja exitosamente."]);
 } catch (Exception $e) {

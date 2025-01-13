@@ -17,17 +17,38 @@ class AlumnoController
         $this->auditoriaModel = new Auditoria();
     }
 
+    private function obtenerIdAcceso()
+    {
+        $headers = apache_request_headers();
+
+        if (!isset($headers['Authorization'])) {
+            throw new Exception("Token no proporcionado.");
+        }
+
+        $token = str_replace('Bearer ', '', $headers['Authorization']);
+        $id_usuario = $this->validateJWT($token);
+
+        // Validar y decodificar el token
+        $payload = $this->validateJWT($token);
+        error_log("Payload recibido en obtenerIdAcceso: " . json_encode($payload));
+
+        $data = $payload['data'] ?? null;
+
+        if (!$id_usuario) {
+            throw new Exception("No se pudo obtener el ID del usuario.");
+        }
+        return $id_usuario;
+    }
+
     public function registrarAlumno($data)
     {
         try {
-            // Validar el token y obtener el ID del usuario
-            $headers = apache_request_headers();
-            if (!isset($headers['Authorization'])) {
-                throw new Exception("Token no proporcionado.");
-            }
 
-            $token = str_replace('Bearer ', '', $headers['Authorization']);
-            $id_usuario = $this->validateJWT($token);
+            $id_acceso = $this->obtenerIdAcceso();
+
+            if (!$id_acceso) {
+                throw new Exception("No jalo" . $id_acceso);
+            }
 
             // Validar los datos enviados
             if (empty($data->mayores->nombre) || empty($data->mayores->curp) || empty($data->grado->nivel) || empty($data->grado->grado)) {
@@ -36,7 +57,7 @@ class AlumnoController
 
             // Preparar los datos para el modelo
             $dataToInsert = [
-                'id_usuario' => $id_usuario,
+                'id_usuario' => $id_acceso,
                 'accion' => 'Registro de alumno',
                 'detalle' => 'Intento de registro de alumno con CURP: ' . $data->mayores->curp,
                 'mayores' => [
@@ -85,6 +106,40 @@ class AlumnoController
             return $decoded->data->id_usuario;
         } catch (Exception $e) {
             throw new Exception("Token inválido: " . $e->getMessage());
+        }
+    }
+
+    public function darDeBajaAlumno($data)
+    {
+        /*header('Content-Type: application/json');
+        echo json_encode([
+            "debug" => true,
+            "data" => $data,
+        ]);
+        exit;*/
+        try {
+
+            $id_acceso = $this->obtenerIdAcceso();
+
+            if (!$id_acceso) {
+                throw new Exception("No jalo" . $id_acceso);
+            }
+
+            if (empty($data->id_escuelaAlumnoGrado)) {
+                echo json_encode(["success" => false, "message" => "Falta el ID del grado del alumno."]);
+                http_response_code(400);
+                return false;
+            }
+
+            $resultado = $this->alumnoModel->darDeBajaAlumno($data->id_escuelaAlumnoGrado, $id_acceso);
+
+            if (!$resultado) {
+                throw new Exception("No se pudo dar de baja al alumno.");
+            }
+        } catch (Exception $e) {
+            error_log("Error en darDeBajaAlumno:" . $e->getMessage());
+            echo json_encode(["success" => false, "message" => $e->getMessage()]);
+            http_response_code(500);
         }
     }
 }

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../models/Alumno.php';
+require_once __DIR__ . '/../models/Auditoria.php';
 require_once __DIR__ . '/../../vendor/autoload.php';
 
 use Firebase\JWT\JWT;
@@ -8,10 +9,12 @@ use Firebase\JWT\Key;
 class CalificacionesController
 {
     private $alumnoModel;
+    private $auditoriaModel;
 
     public function __construct()
     {
         $this->alumnoModel = new Alumno();
+        $this->auditoriaModel = new Auditoria();
     }
 
     private function obtenerIdAcceso()
@@ -19,10 +22,11 @@ class CalificacionesController
         $headers = apache_request_headers();
 
         if (!isset($headers['Authorization'])) {
-            throw new Exception("No se proporcionó el token de autorización.");
+            throw new Exception("Token no proporcionado.");
         }
 
         $token = str_replace('Bearer ', '', $headers['Authorization']);
+        $id_usuario = $this->validateJWT($token);
 
         // Validar y decodificar el token
         $payload = $this->validateJWT($token);
@@ -30,32 +34,24 @@ class CalificacionesController
 
         $data = $payload['data'] ?? null;
 
-        if (!$data || !isset($data['id_usuario'])) {
-            throw new Exception("El token no contiene el campo 'id_usuario'. Payload: " . json_encode($payload));
+        if (!$id_usuario) {
+            throw new Exception("No se pudo obtener el ID del usuario.");
         }
-
-        $id_usuario = $data['id_usuario'];
-
-        // Obtener el último id_acceso
-        require_once __DIR__ . '/../models/Auditoria.php';
-        $auditoriaModel = new Auditoria();
-        return $auditoriaModel->obtenerUltimoIdAcceso($id_usuario);
+        return $id_usuario;
     }
 
-    function validateJWT($token)
+    private function validateJWT($token)
     {
         try {
             // Decodificar el token usando la clave secreta
             $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
             // Registrar el payload decodificado en el log
-            error_log("Payload decodificado: " . json_encode($decoded));
+            error_log("Payload decodificado en registrarAlumno: " . json_encode($decoded));
 
-            // Convertir el objeto a un arreglo asociativo
-            return json_decode(json_encode($decoded), true);
+            // Devolver el ID del usuario
+            return $decoded->data->id_usuario;
         } catch (Exception $e) {
-            // Manejar errores de decodificación
-            error_log("Error al decodificar el token: " . $e->getMessage());
             throw new Exception("Token inválido: " . $e->getMessage());
         }
     }
@@ -63,19 +59,25 @@ class CalificacionesController
 
     public function registrarCalificacion($data)
     {
-        if (empty($data->id_escuelaAlumnoGradoMayores)) {
-            echo json_encode(["success" => false, "message" => "Falta el ID del grado del alumno."]);
-            http_response_code(400);
-            return;
-        }
-
-        if (empty($data->calificaciones) || !isset($data->calificaciones->espanol, $data->calificaciones->matematicas, $data->calificaciones->cienciasNaturales, $data->calificaciones->cienciasSociales)) {
-            echo json_encode(["success" => false, "message" => "Faltan los datos de calificaciones."]);
-            http_response_code(400);
-            return;
-        }
-
         try {
+            // Validar el token del usuario y obtener el último acceso
+            $id_acceso = $this->obtenerIdAcceso();
+
+            if (!$id_acceso) {
+                throw new Exception("No jalo" . $id_acceso);
+            }
+
+            if (empty($data->id_escuelaAlumnoGradoMayores)) {
+                echo json_encode(["success" => false, "message" => "Falta el ID del grado del alumno."]);
+                http_response_code(400);
+                return;
+            }
+
+            if (empty($data->calificaciones) || !isset($data->calificaciones->espanol, $data->calificaciones->matematicas, $data->calificaciones->cienciasNaturales, $data->calificaciones->cienciasSociales)) {
+                echo json_encode(["success" => false, "message" => "Faltan los datos de calificaciones."]);
+                http_response_code(400);
+                return;
+            }
             // Validar que el alumno y su grado existan
             $alumnoGrado = $this->alumnoModel->obtenerAlumnoGrado($data->id_escuelaAlumnoGradoMayores);
             if (!$alumnoGrado) {
@@ -86,9 +88,6 @@ class CalificacionesController
 
             // Ajustar las calificaciones dentro del rango permitido
             $data->calificaciones = $this->ajustarCalificaciones($data->calificaciones);
-
-            // Validar el token del usuario y obtener el último acceso
-            $id_acceso = $this->obtenerIdAcceso();
 
             // Validar si el alumno puede capturar calificaciones
             $puedeCapturar = $this->alumnoModel->puedeCapturarCalificaciones($data->id_escuelaAlumnoGradoMayores);
@@ -127,27 +126,17 @@ class CalificacionesController
             if ($aprobo) {
                 // Usar la función promoverAlumno para registrar el siguiente grado
                 $this->promoverAlumno($data->id_escuelaAlumnoGradoMayores, $alumnoGrado, $id_acceso);
-
-                echo json_encode([
-                    "success" => true,
-                    "message" => "Calificaciones registradas exitosamente y el alumno fue promovido al siguiente grado."
-                ]);
+                echo json_encode(["success" => true, "message" => "Calificaciones registradas exitosamente y el alumno fue promovido al siguiente grado."]);
                 http_response_code(201);
                 return;
             } else {
                 $this->registrarIntentoAdicional($data->id_escuelaAlumnoGradoMayores, $id_acceso);
-                echo json_encode([
-                    "success" => true,
-                    "message" => "Añadido intento adicional."
-                ]);
+                echo json_encode(["success" => true, "message" => "Añadido intento adicional."]);
                 http_response_code(201);
             }
 
             // Respuesta de éxito solo con registro de calificaciones
-            echo json_encode([
-                "success" => true,
-                "message" => "Calificaciones registradas exitosamente."
-            ]);
+            echo json_encode(["success" => true, "message" => "Calificaciones registradas exitosamente."]);
             http_response_code(201);
         } catch (Exception $e) {
             error_log("Error en registrarCalificacion: " . $e->getMessage());
@@ -158,12 +147,15 @@ class CalificacionesController
 
     private function promoverAlumno($idGrado, $gradoActual, $idAcceso)
     {
+        /*header('Content-Type: application/json');
+        echo json_encode([
+            "debug" => true,
+            "data" => $idAcceso
+        ]);
+        exit;*/
         try {
             $promovido = $this->alumnoModel->registrarSiguienteGrado(
                 $idGrado,
-                $gradoActual['id_escuelaPlantel'],
-                $gradoActual['nivel'],
-                $gradoActual['grado'],
                 $idAcceso
             );
 
